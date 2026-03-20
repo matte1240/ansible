@@ -1,0 +1,39 @@
+name: Aggiornamento Server
+
+on:
+  # Esecuzione manuale dal tab Actions
+  workflow_dispatch:
+
+  # Oppure schedulato (ogni domenica alle 3:00 UTC)
+  # schedule:
+  #   - cron: '0 3 * * 0'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Connetti a Tailscale
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      - name: Installa Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
+      - name: Configura chiave SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_IPS }} >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Esegui playbook di aggiornamento
+        run: ansible-playbook playbooks/update.yml

@@ -1,0 +1,62 @@
+---
+# Playbook per aggiornare i server
+# Uso: ansible-playbook playbooks/update.yml
+#   oppure: ansible-playbook playbooks/update.yml --limit webservers
+
+- name: Aggiornamento server
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    # === Debian / Ubuntu ===
+    - name: Aggiorna cache apt
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Aggiorna tutti i pacchetti (apt)
+      ansible.builtin.apt:
+        upgrade: dist
+      register: apt_result
+      when: ansible_os_family == "Debian"
+
+    # === RHEL / CentOS / Rocky / AlmaLinux ===
+    - name: Aggiorna tutti i pacchetti (dnf)
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+      register: dnf_result
+      when: ansible_os_family == "RedHat"
+
+    # === Controlla se serve un reboot ===
+    - name: Controlla se è necessario un riavvio (Debian)
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+      when: ansible_os_family == "Debian"
+
+    - name: Controlla se è necessario un riavvio (RedHat)
+      ansible.builtin.command: needs-restarting -r
+      register: needs_restarting
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family == "RedHat"
+
+    - name: Riavvia il server se necessario
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Riavvio dopo aggiornamento pacchetti"
+      when: >
+        (ansible_os_family == "Debian" and reboot_required_file.stat.exists | default(false)) or
+        (ansible_os_family == "RedHat" and needs_restarting.rc | default(0) == 1)
+
+    - name: Attendi che il server sia di nuovo raggiungibile
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 300
+      when: >
+        (ansible_os_family == "Debian" and reboot_required_file.stat.exists | default(false)) or
+        (ansible_os_family == "RedHat" and needs_restarting.rc | default(0) == 1)
