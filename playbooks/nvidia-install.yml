@@ -5,7 +5,7 @@
   gather_facts: true
 
   vars:
-    nvidia_driver_version: "590"
+    nvidia_driver_version: "580"
     nvidia_driver_package: "nvidia-driver-{{ nvidia_driver_version }}"
 
   tasks:
@@ -13,7 +13,7 @@
 
     - name: Check for NVIDIA GPU via lspci
       ansible.builtin.shell:
-        cmd: lspci | grep -i 'nvidia.*vga\|nvidia.*3d'
+        cmd: lspci | grep -i 'nvidia'
       register: nvidia_gpu_check
       changed_when: false
       failed_when: false
@@ -36,10 +36,15 @@
 
     - name: Check if NVIDIA driver is already loaded
       ansible.builtin.shell:
-        cmd: nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1
+        cmd: nvidia-smi --query-gpu=driver_version --format=csv,noheader
       register: nvidia_driver_current
       changed_when: false
       failed_when: false
+      when: nvidia_gpu_present | bool
+
+    - name: Set driver installed fact
+      ansible.builtin.set_fact:
+        nvidia_driver_installed: "{{ nvidia_driver_current.rc == 0 and nvidia_driver_current.stdout | default('') | length > 0 }}"
       when: nvidia_gpu_present | bool
 
     - name: Display current driver status
@@ -47,7 +52,7 @@
         msg: >-
           {{
             'NVIDIA driver already installed: v' ~ nvidia_driver_current.stdout
-            if nvidia_driver_current.stdout | default('') | length > 0
+            if nvidia_driver_installed | bool
             else 'No NVIDIA driver currently active.'
           }}
       when: nvidia_gpu_present | bool
@@ -65,7 +70,7 @@
       register: nvidia_install
       when:
         - nvidia_gpu_present | bool
-        - nvidia_driver_current.stdout | default('') | length == 0
+        - not nvidia_driver_installed | bool
 
     # ── NVIDIA Container Toolkit (optional) ────────────────────────
 
