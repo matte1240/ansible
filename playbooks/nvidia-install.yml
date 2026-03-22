@@ -1,0 +1,137 @@
+---
+- name: Detect NVIDIA GPU and install drivers
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    nvidia_driver_version: "590"
+    nvidia_driver_package: "nvidia-driver-{{ nvidia_driver_version }}"
+
+  tasks:
+    # ── GPU Detection ──────────────────────────────────────────────
+
+    - name: Check for NVIDIA GPU via lspci
+      ansible.builtin.shell:
+        cmd: lspci | grep -i 'nvidia.*vga\|nvidia.*3d'
+      register: nvidia_gpu_check
+      changed_when: false
+      failed_when: false
+
+    - name: Set GPU detection fact
+      ansible.builtin.set_fact:
+        nvidia_gpu_present: "{{ nvidia_gpu_check.rc == 0 }}"
+        nvidia_gpu_model: "{{ nvidia_gpu_check.stdout | default('N/A') }}"
+
+    - name: Display GPU detection result
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            'NVIDIA GPU detected: ' ~ nvidia_gpu_model
+            if nvidia_gpu_present | bool
+            else 'No NVIDIA GPU detected — skipping driver installation.'
+          }}
+
+    # ── Driver Installation ────────────────────────────────────────
+
+    - name: Check if NVIDIA driver is already loaded
+      ansible.builtin.shell:
+        cmd: nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1
+      register: nvidia_driver_current
+      changed_when: false
+      failed_when: false
+      when: nvidia_gpu_present | bool
+
+    - name: Display current driver status
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            'NVIDIA driver already installed: v' ~ nvidia_driver_current.stdout
+            if nvidia_driver_current.stdout | default('') | length > 0
+            else 'No NVIDIA driver currently active.'
+          }}
+      when: nvidia_gpu_present | bool
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: nvidia_gpu_present | bool
+
+    - name: Install NVIDIA driver
+      ansible.builtin.apt:
+        name: "{{ nvidia_driver_package }}"
+        state: present
+      register: nvidia_install
+      when:
+        - nvidia_gpu_present | bool
+        - nvidia_driver_current.stdout | default('') | length == 0
+
+    # ── NVIDIA Container Toolkit (optional) ────────────────────────
+
+    - name: Check if Docker is installed
+      ansible.builtin.command:
+        cmd: docker --version
+      register: docker_check
+      changed_when: false
+      failed_when: false
+      when: nvidia_gpu_present | bool
+
+    - name: Add NVIDIA Container Toolkit GPG key
+      ansible.builtin.shell:
+        cmd: >
+          curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey
+          | gpg --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        creates: /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+      when:
+        - nvidia_gpu_present | bool
+        - docker_check.rc == 0
+
+    - name: Add NVIDIA Container Toolkit repository
+      ansible.builtin.shell:
+        cmd: >
+          curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list
+          | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g'
+          | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      register: nvidia_toolkit_repo
+      when:
+        - nvidia_gpu_present | bool
+        - docker_check.rc == 0
+
+    - name: Update apt cache after adding toolkit repo
+      ansible.builtin.apt:
+        update_cache: true
+      when: nvidia_toolkit_repo is changed
+
+    - name: Install NVIDIA Container Toolkit
+      ansible.builtin.apt:
+        name: nvidia-container-toolkit
+        state: present
+      register: nvidia_toolkit_install
+      when:
+        - nvidia_gpu_present | bool
+        - docker_check.rc == 0
+
+    - name: Configure Docker to use NVIDIA runtime
+      ansible.builtin.command:
+        cmd: nvidia-ctk runtime configure --runtime=docker
+      register: nvidia_ctk_configure
+      changed_when: "'Wrote updated config' in nvidia_ctk_configure.stdout"
+      when:
+        - nvidia_gpu_present | bool
+        - docker_check.rc == 0
+        - nvidia_toolkit_install is changed
+
+    - name: Restart Docker daemon
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+      when: nvidia_ctk_configure is changed
+
+    # ── Reboot Notice ──────────────────────────────────────────────
+
+    - name: Notify reboot required
+      ansible.builtin.debug:
+        msg: "REBOOT REQUIRED — NVIDIA driver {{ nvidia_driver_version }} was installed. Run 'sudo reboot' to activate it."
+      when: nvidia_install is changed
